@@ -9,8 +9,8 @@
 	},
 	"scripts": {
 		"test": "node --test test/**/*.test.js",
-		"start": "fastify start -l info -p 5500 app.js",
-		"dev": "fastify start -w -l trace -P -p 5000 app.js"
+		"start": "fastify start -l info -p 3100 app.js",
+		"dev": "fastify start -w -l trace -P -p 3100 app.js"
 	},
 	"keywords": [],
 	"author": "",

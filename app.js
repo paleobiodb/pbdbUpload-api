@@ -206,10 +206,10 @@ export default async function (fastify, opts) {
 		promise: true,
 		//TODO:  get host from .env and make it dependent on run variable.
 		//Note: This works if host.docker.internal is added to docker run in vscode settings
-		host: 'localhost',
+		host: 'mariadb',
 		//host: 'host.docker.internal',
 		user: 'pbdbuser',
-		password: 'pbdbpwd',
+		password: 'fipt',
 		database: 'pbdb',
 		connectionLimit: 5,
 	})
