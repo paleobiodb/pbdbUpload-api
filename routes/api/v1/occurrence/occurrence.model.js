@@ -1,4 +1,4 @@
-import {prepareInsertAssets, prepareUpdateAssets, calcDegreesMinutesSeconds} from '../../../../util.js'
+import {prepareInsertAssets, prepareUpdateAssets, calcDegreesMinutesSeconds, parseTaxon} from '../../../../util.js'
 import {logger} from '../../../../app.js'
 
 const isDuplicate = async (conn, occurrence) => {
@@ -59,6 +59,7 @@ const verifyCollection = async (conn, collectionID) => {
     }
 }
 
+/*
 const fetchTaxon = async (conn, taxonID) => {
     logger.trace("fetchTaxon")
     logger.trace(taxonID)
@@ -85,6 +86,69 @@ const fetchTaxon = async (conn, taxonID) => {
                         `${taxonParsed[0][3]} ${taxonParsed[0][4]}` :
                         taxonParsed[0][3] :
                  null
+    }
+}
+*/
+
+export const fetchClosestTaxon = async (conn, occurrence) => {
+    logger.trace("fetchClosestTaxon")
+
+    const sql = `
+        select 
+            taxon_no, taxon_name, taxon_rank 
+        from 
+            authorities
+        where
+            taxon_name = "${occurrence.genus_name}${occurrence.subgenus_name ? ` (${occurrence.subgenus_name})` : ''}${occurrence.species_name ? ` ${occurrence.species_name}` : ''}${occurrence.subspecies_name ? ` ${occurrence.subspecies_name}` : ''}"
+        union
+        select 
+            taxon_no, taxon_name, taxon_rank 
+        from 
+            authorities
+        where
+            taxon_name = "${occurrence.genus_name}${occurrence.subgenus_name ? ` (${occurrence.subgenus_name})` : ''}${occurrence.species_name ? ` ${occurrence.species_name}` : ''}"
+        union
+        select 
+            taxon_no, taxon_name, taxon_rank 
+        from 
+            authorities
+        where
+            taxon_name = "${occurrence.genus_name}${occurrence.subgenus_name ? ` (${occurrence.subgenus_name})` : ''}"
+        union
+        select 
+            taxon_no, taxon_name, taxon_rank 
+        from 
+            authorities
+        where
+            taxon_name = "${occurrence.genus_name}"
+    `
+    console.log(sql)
+
+    const taxonResult = await conn.query(sql);
+    if (taxonResult.length === 0) {
+        return null
+    }
+
+    if (taxonResult.length > 1) {
+        if (taxonResult[0].taxon_rank === taxonResult[1].taxon_rank) {
+            const error = new Error(`Cannot assign taxon. The nearest taxon name (${taxonResult[0].taxon_name}) is a homonym. If this is expected, then resubmit with bypassTaxon set to true.`);
+            error.statusCode = 409;
+            throw error;
+        }
+    }
+    
+    logger.trace(taxonResult[0])
+
+    const taxonParsed = [...taxonResult[0].taxon_name.matchAll(/^(?:(\p{Lu}\p{Ll}*) ?)(?:\((\p{Lu}\p{Ll}*)\) ?)?(\p{Ll}*)?(?: (\p{Ll}*))?/gu)]
+    const genus = taxonParsed[0][1];
+    const subgenus = taxonParsed[0][2];
+    const species = taxonParsed[0][3];
+    const subspecies = taxonParsed[0][4];
+
+    return {
+        id: taxonResult[0].taxon_no,
+        rank: taxonResult[0].taxon_rank,
+        name: taxonResult[0].taxon_name
     }
 }
 
@@ -140,22 +204,50 @@ export const getOccurrence = async (pool, id) => {
     }
 }
 
-export const createOccurrence = async (pool, occurrence, user, allowDuplicate) => {
+export const createOccurrence = async (pool, occurrence, user, allowDuplicate, bypassTaxon) => {
     logger.info("createOccurrence");
     logger.trace(occurrence);
     logger.trace(user)
 
-    const insertAssets = prepareInsertAssets(occurrence, []);
-	insertAssets.propStr += `, enterer, enterer_no, authorizer_no`;
-	insertAssets.valStr += `, :enterer, :enterer_no, :authorizer_no`;
-    insertAssets.values.enterer = user.userName; //TODO: consider stripping to first initial
-    insertAssets.values.enterer_no = user.userID;
-    insertAssets.values.authorizer_no = user.authorizerID;
+    //TODO: Assign _resos from taxon name? See OccurrenceEntry.pm line 759, 796
+
+    if (occurrence.taxon_name) {
+        const taxon = parseTaxon(occurrence.taxon_name, true);
+
+        if (!taxon.genus ||
+            (taxon.subspecies && !taxon.species)
+        ) {
+            const error = new Error(`Invalid taxon name: ${occurrence.taxon_name}`)
+            error.statusCode = 400
+            throw error
+        }
+
+        //NOTE: The occurrences table does not have a column for subspecies_name. I keep it separate here for use in fetchClosestTaxon. Then I merge it with species_name before passing the occurrence to prepareInsertAssets.
+        //NOTE2: Subspecies name and reso appears to have been added to the occurrences table aroudn 2024/08/09. Verify this and get the latest db. Then update this code.
+        occurrence.genus_name = taxon.genus;
+        occurrence.subgenus_name = taxon.subgenus;
+        occurrence.species_name = taxon.species;
+        occurrence.subspecies_name = taxon.subspecies;
+        occurrence.genus_reso = taxon.genusReso;
+        occurrence.subgenus_reso = taxon.subgenusReso;
+        occurrence.species_reso = taxon.speciesReso;
+        //occurrence.subspecies_reso = taxon.subspeciesReso;
+        delete occurrence.taxon_name;
+    }
    
     let conn;
     try {
         conn = await pool.getConnection();
         await conn.beginTransaction();
+
+        if (!bypassTaxon) {
+            const taxon = await fetchClosestTaxon(conn, occurrence);
+            if (taxon) {
+                occurrence.taxon_no = taxon.id
+            }
+        }
+        occurrence.species_name = `${occurrence.species_name}${occurrence.subspecies_name ? ` ${occurrence.subspecies_name}` : ''}`;
+        delete occurrence.subspecies_name;
 
         if (
             allowDuplicate || 
@@ -165,54 +257,13 @@ export const createOccurrence = async (pool, occurrence, user, allowDuplicate) =
             await verifyReference(conn, occurrence.reference_no);
             await verifyCollection(conn, occurrence.collection_no);
             
-            const taxon = await fetchTaxon(conn, occurrence.taxon_no);
-            logger.trace("taxon = ")
-            logger.trace(taxon)
-
-            if (
-                ("genus" === taxon.rank && !occurrence.genus_reso) ||
-                ("subgenus" === taxon.rank && !occurrence.subgenus_reso) ||
-                ("species" === taxon.rank && !occurrence.species_reso)
-            ) {
-                const error = new Error(`Taxon has rank ${taxon.rank}. ${taxon.rank}_reso is required.`)
-                error.statusCode = 400
-                throw error
-            }
-
-            if ((
-                "genus" === taxon.rank && (
-                    occurrence.subgenus_reso || 
-                    occurrence.species_reso || 
-                    occurrence.subspecies_reso
-                )) ||  (
-                "subgenus" === taxon.rank && (
-                    occurrence.species_reso || 
-                    occurrence.subspecies_reso
-                )) || (
-                "species" === taxon.rank && (
-                    occurrence.subspecies_reso
-                )) 
-            ) {
-                const error = new Error(`Taxon has rank ${taxon.rank}. Resolutions below that rank are not allowed.`)
-                error.statusCode = 400
-                throw error
-            }
+            const insertAssets = prepareInsertAssets(occurrence, []);
+            insertAssets.propStr += `, enterer, enterer_no, authorizer_no`;
+            insertAssets.valStr += `, :enterer, :enterer_no, :authorizer_no`;
+            insertAssets.values.enterer = user.userName; //TODO: consider stripping to first initial
+            insertAssets.values.enterer_no = user.userID;
+            insertAssets.values.authorizer_no = user.authorizerID;
         
-            //properties derived from taxon
-            insertAssets.propStr += `, genus_name`;
-            insertAssets.valStr += `, :genus_name`;
-            insertAssets.values.genus_name = taxon.genus; 
-            if (taxon.subgenus) {
-                insertAssets.propStr += ', subgenus_name';
-                insertAssets.valStr += ', :subgenus_name';
-                insertAssets.values.subgenus_name = taxon.subgenus;
-            }
-            if (taxon.species) {
-                insertAssets.propStr += ', species_name';
-                insertAssets.valStr += ', :species_name';
-                insertAssets.values.species_name = taxon.species; 
-            }
-
             const insertSQL = `insert into occurrences (${insertAssets.propStr}) values (${insertAssets.valStr}) returning occurrence_no`
             logger.trace(insertSQL)
             logger.trace(insertAssets.values)
@@ -247,80 +298,72 @@ export const createOccurrence = async (pool, occurrence, user, allowDuplicate) =
     }
 }
 
-export const updateOccurrence = async (pool, patch, user, allowDuplicate, mergedOccurrence) => {
+export const updateOccurrence = async (pool, patch, user, allowDuplicate, bypassTaxon, mergedOccurrence) => {
     logger.info("updateOccurrence");
     logger.trace(user)
     logger.trace(patch);
     logger.trace(mergedOccurrence)
 
-    const updateAssets = prepareUpdateAssets(patch, []);
-    
-    updateAssets.propStr += `${updateAssets.propStr === '' ? '': ', '} modifier = :modifier, modifier_no = :modifier_no`
-    updateAssets.values.modifier = user.userName; //TODO: consider stripping to first initial
-    updateAssets.values.modifier_no = user.userID;
-    updateAssets.values.occurrence_no = mergedOccurrence.occurrence_no;
+    /*
+    if (patch.taxon_name) {
+        const taxon = parseTaxon(patch.taxon_name);
+
+        if (!taxon.genus ||
+            (taxon.subspecies && !taxon.species)
+        ) {
+            const error = new Error(`Invalid taxon name: ${occurrence.taxon_name}`)
+            error.statusCode = 400
+            throw error
+        }
+
+        patch.genus_name = taxon.genus;
+        patch.subgenus_name = taxon.subgenus;
+        patch.species_name = taxon.species;
+        patch.subspecies_name = taxon.subspecies;
+        delete patch.taxon_name;
+
+        mergedOccurrence.genus_name = taxon.genus;
+        mergedOccurrence.subgenus_name = taxon.subgenus;
+        mergedOccurrence.species_name = taxon.species;
+        mergedOccurrence.subspecies_name = taxon.subspecies;
+        delete mergedOccurrence.taxon_name;
+    }
+    */
 
     let conn;
     try {
         conn = await pool.getConnection();
         await conn.beginTransaction();
 
+        if (!bypassTaxon) {
+            const taxon = await fetchClosestTaxon(conn, mergedOccurrence);
+            if (taxon) {
+                patch.taxon_no = taxon.id
+                mergedOccurrence.taxon_no = taxon.id
+            }
+        }
+
         if (
             allowDuplicate || 
             ! await isDuplicate(conn, mergedOccurrence)
         ) {
 
+            patch.species_name = `${patch.species_name}${patch.subspecies_name ? ` ${patch.subspecies_name}` : ''}`;
+            delete patch.subspecies_name;
+
+            const updateAssets = prepareUpdateAssets(patch, []);
+    
+            updateAssets.propStr += `${updateAssets.propStr === '' ? '': ', '} modifier = :modifier, modifier_no = :modifier_no`
+            updateAssets.values.modifier = user.userName; //TODO: consider stripping to first initial
+            updateAssets.values.modifier_no = user.userID;
+            updateAssets.values.occurrence_no = mergedOccurrence.occurrence_no;
+        
             //verify fks
             if (patch.reference_no || patch.reference_no === 0) {
                 await verifyReference(conn, patch.reference_no);
             }
             if (patch.collection_no || patch.collection_no === 0) {
                 await verifyCollection(conn, patch.collection_no);
-            }
-
-            const taxon = await fetchTaxon(conn, mergedOccurrence.taxon_no);
-            logger.trace("taxon = ")
-            logger.trace(taxon)
-
-            if (
-                ("genus" === taxon.rank && !mergedOccurrence.genus_reso) ||
-                ("subgenus" === taxon.rank && !mergedOccurrence.subgenus_reso) ||
-                ("species" === taxon.rank && !mergedOccurrence.species_reso)
-            ) {
-                const error = new Error(`Taxon has rank ${taxon.rank}. ${taxon.rank}_reso is required.`)
-                error.statusCode = 400
-                throw error
-            }
-
-            if ((
-                "genus" === taxon.rank && (
-                    mergedOccurrence.subgenus_reso || 
-                    mergedOccurrence.species_reso || 
-                    mergedOccurrence.subspecies_reso
-                )) ||  (
-                "subgenus" === taxon.rank && (
-                    mergedOccurrence.species_reso || 
-                    mergedOccurrence.subspecies_reso
-                )) || (
-                "species" === taxon.rank && (
-                    mergedOccurrence.subspecies_reso
-                )) 
-            ) {
-                const error = new Error(`Taxon has rank ${taxon.rank}. Resolutions below that rank are not allowed.`)
-                error.statusCode = 400
-                throw error
-            }
-        
-            //properties derived from taxon
-            updateAssets.propStr += `, genus_name = :genus_name`;
-            updateAssets.values.genus_name = taxon.genus; 
-            if (taxon.subgenus) {
-                updateAssets.propStr += ', subgenus_name = :subgenus_name';
-                updateAssets.values.subgenus_name = taxon.subgenus;
-            }
-            if (taxon.species) {
-                updateAssets.propStr += ', species_name = :species_name';
-                updateAssets.values.species_name = taxon.species; 
             }
 
             const updateSQL = `update occurrences set ${updateAssets.propStr} where occurrence_no = :occurrence_no`

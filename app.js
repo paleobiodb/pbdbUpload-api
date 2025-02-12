@@ -243,7 +243,17 @@ export default async function (fastify, opts) {
 							request.userID = rows2[0].person_no;
 							request.userName = rows2[0].real_name;
 							request.authorizerID = rows2[0].authorizer_no;
-							if ('enterer' === rows2[0].role || 'authorizer' === rows2[0].role) {
+							if (
+								'enterer' === rows2[0].role || 
+								'authorizer' === rows2[0].role ||( 
+									'student' === rows2[0].role && (
+										"GET" === request.method || (
+											['POST', 'PUT'].includes(request.method) &&
+											['reference', 'collection', 'occurrence', 'specimen'].includes(request.url.match(/\/api\/v.\/([a-z]*)/)[1])
+										)
+									)  
+								)
+							) {
 								return
 							} else {
 								const err = new Error('not authorized');

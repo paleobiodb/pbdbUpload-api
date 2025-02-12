@@ -64,7 +64,7 @@ export default async function (fastify, opts) {
 			fastify.log.info("authority POST")
 			fastify.log.trace(req.body)
 	
-			const newAuthority = await createAuthority(fastify.mariadb, req.body.authority, {userID: req.userID, userName: req.userName, authorizerID: req.authorizerID}, req.body.allowDuplicate)
+			const newAuthority = await createAuthority(fastify.mariadb, req.body.authority, {userID: req.userID, userName: req.userName, authorizerID: req.authorizerID}, req.body.allowDuplicate, req.body.bypassOccurrences)
 		
 			return {statusCode: 201, msg: "authority created", taxon_no: newAuthority.taxon_no}
 		}
@@ -86,6 +86,14 @@ export default async function (fastify, opts) {
 
 			//fetch existing collection from db
 			const authorities = await getAuthority(fastify.mariadb, req.params.id);
+
+			if (!authorities || authorities.length === 0) {
+				const error = new Error(`Unrecognized authority: ${req.params.id}`);
+				error.statusCode = 400
+				throw error
+			}
+
+			delete authorities[0].meta
 			fastify.log.trace(authorities[0])
 
 			//strip null properties
@@ -113,7 +121,7 @@ export default async function (fastify, opts) {
 			fastify.log.info("mergedAuthority after validation(taxon_no added")
 			fastify.log.info(mergedAuthority)
 
-			await updateAuthority(fastify.mariadb, req.body.authority, {userID: req.userID, userName: req.userName, authorizerID: req.authorizerID}, req.body.allowDuplicate, mergedAuthority.authority)
+			await updateAuthority(fastify.mariadb, req.body.authority, {userID: req.userID, userName: req.userName, authorizerID: req.authorizerID}, req.body.allowDuplicate, req.body.bypassOccurrences, mergedAuthority.authority)
 
 			return {statusCode: 204, msg: "Authority modified"}
   		}

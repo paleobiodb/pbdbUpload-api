@@ -1,6 +1,7 @@
 import {createSchema, editSchema, getSchema} from './occurrence.schema.js'
 import {getOccurrences, getOccurrence, createOccurrence, updateOccurrence} from './occurrence.model.js'
 import jmp from 'json-merge-patch'
+import {parseTaxon} from '../../../../util.js'
 
 export default async function (fastify, opts) {
     fastify.get(    	
@@ -15,6 +16,16 @@ export default async function (fastify, opts) {
 		}, 
 		async (request, reply) => {
 			fastify.log.info("get handler");
+
+			if (request.query.taxonname) {
+				const taxon = parseTaxon(request.query.taxonname, true)
+				return {
+					data: {
+						taxon: taxon,
+					}
+				}
+	
+			}
 
 			const aCookieValue = request.cookies.session_id
 			fastify.log.trace(aCookieValue);
@@ -64,7 +75,7 @@ export default async function (fastify, opts) {
 			fastify.log.info("occurrence POST")
 			fastify.log.trace(req.body)
 	
-			const newOccurrence = await createOccurrence(fastify.mariadb, req.body.occurrence, {userID: req.userID, userName: req.userName, authorizerID: req.authorizerID}, req.body.allowDuplicate)
+			const newOccurrence = await createOccurrence(fastify.mariadb, req.body.occurrence, {userID: req.userID, userName: req.userName, authorizerID: req.authorizerID}, req.body.allowDuplicate, req.body.bypassTaxon)
 		
 			return {statusCode: 201, msg: "occurrence created", occurrence_no: newOccurrence.occurrence_no}
 		}
@@ -86,6 +97,13 @@ export default async function (fastify, opts) {
 
 			//fetch existing collection from db
 			const occurrences = await getOccurrence(fastify.mariadb, req.params.id);
+
+			if (!occurrences || occurrences.length === 0) {
+				const error = new Error(`Unrecognized occurrence: ${req.params.id}`);
+				error.statusCode = 400
+				throw error
+			}
+
 			fastify.log.trace(occurrences[0])
 
 			//strip null properties
@@ -93,10 +111,32 @@ export default async function (fastify, opts) {
 			fastify.log.trace("after stripping nulls")
 			fastify.log.trace(occurrence)
 
+			if (req.body.occurrence.taxon_name) {
+				const taxon = parseTaxon(req.body.occurrence.taxon_name, true);
+		
+				if (!taxon.genus ||
+					(taxon.subspecies && !taxon.species)
+				) {
+					const error = new Error(`Invalid taxon name: ${occurrence.taxon_name}`)
+					error.statusCode = 400
+					throw error
+				}
+		
+				req.body.occurrence.genus_name = taxon.genus;
+				req.body.occurrence.subgenus_name = taxon.subgenus;
+				req.body.occurrence.species_name = taxon.species;
+				req.body.occurrence.subspecies_name = taxon.subspecies;
+				req.body.occurrence.genus_reso = taxon.genusReso;
+				req.body.occurrence.subgenus_reso = taxon.subgenusReso;
+				req.body.occurrence.species_reso = taxon.speciesReso;
+				//req.body.occurrence.subspecies_reso = taxon.subspeciesReso;
+				delete req.body.occurrence.taxon_name;
+			}
+		
 			//merge with patch in req.body 
 			const mergedOccurrence = jmp.apply(occurrence, req.body)
 			fastify.log.trace("after merge")
-			fastify.log.trace(mergedOccurrence)
+			fastify.log.trace(mergedOccurrence) 
 
 			//create a validator using the createSchema
 			const validate = req.compileValidationSchema(createSchema.body);
@@ -108,12 +148,17 @@ export default async function (fastify, opts) {
 				return {statusCode: 400, msg: validate.errors}
 			}
 
-			//Need to re-add occurrence_no after validation because fastify sets removeAdditional to true, which removes properties that aren't in validation schema. But model needs it.
+			const tmpTaxonNo = mergedOccurrence.occurrence.taxon_no
+			const tmpReidNo = mergedOccurrence.occurrence.reid_no
+
+			//Need to re-add occurrence_no, taxon_no, and reid_no after validation because fastify sets removeAdditional to true, which removes properties that aren't in validation schema. But model needs them.
 			mergedOccurrence.occurrence.occurrence_no = parseInt(req.params.id);
+			mergedOccurrence.occurrence.taxon_no = tmpTaxonNo;
+			mergedOccurrence.occurrence.reid_no = tmpReidNo;
 			fastify.log.info("mergedOccurrence after validation(occurrence_no added")
 			fastify.log.info(mergedOccurrence)
 
-			await updateOccurrence(fastify.mariadb, req.body.occurrence, {userID: req.userID, userName: req.userName, authorizerID: req.authorizerID}, req.body.allowDuplicate, mergedOccurrence.occurrence)
+			await updateOccurrence(fastify.mariadb, req.body.occurrence, {userID: req.userID, userName: req.userName, authorizerID: req.authorizerID}, req.body.allowDuplicate, req.body.bypassTaxon, mergedOccurrence.occurrence)
 
 			return {statusCode: 204, msg: "Occurrence modified"}
   		}

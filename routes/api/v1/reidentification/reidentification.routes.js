@@ -1,6 +1,7 @@
 import {createSchema, editSchema, getSchema} from './reidentification.schema.js'
 import {getReidentifications, getReidentification, createReidentification, updateReidentification} from './reidentification.model.js'
 import jmp from 'json-merge-patch'
+import { parseTaxon } from '../../../../util.js';
 
 export default async function (fastify, opts) {
     fastify.get(    	
@@ -86,12 +87,41 @@ export default async function (fastify, opts) {
 
 			//fetch existing collection from db
 			const reidentifications = await getReidentification(fastify.mariadb, req.params.id);
+
+			if (!reidentifications || reidentifications.length === 0) {
+				const error = new Error(`Unrecognized reidentification: ${req.params.id}`);
+				error.statusCode = 400
+				throw error
+			}
+
 			fastify.log.trace(reidentifications[0])
 
 			//strip null properties
 			const reidentification = {reidentification: Object.fromEntries(Object.entries(reidentifications[0]).filter(([_, v]) => v != null))};
 			fastify.log.trace("after stripping nulls")
 			fastify.log.trace(reidentification)
+
+			if (req.body.reidentification.taxon_name) {
+				const taxon = parseTaxon(req.body.reidentification.taxon_name, true);
+		
+				if (!taxon.genus ||
+					(taxon.subspecies && !taxon.species)
+				) {
+					const error = new Error(`Invalid taxon name: ${occurrence.taxon_name}`)
+					error.statusCode = 400
+					throw error
+				}
+		
+				req.body.reidentification.genus_name = taxon.genus;
+				req.body.reidentification.subgenus_name = taxon.subgenus;
+				req.body.reidentification.species_name = taxon.species;
+				req.body.reidentification.subspecies_name = taxon.subspecies;
+				req.body.reidentification.genus_reso = taxon.genusReso;
+				req.body.reidentification.subgenus_reso = taxon.subgenusReso;
+				req.body.reidentification.species_reso = taxon.speciesReso;
+				//req.body.reidentification.subspecies_reso = taxon.subspeciesReso;
+				delete req.body.reidentification.taxon_name;
+			}
 
 			//merge with patch in req.body 
 			const mergedReidentification = jmp.apply(reidentification, req.body)
@@ -108,8 +138,11 @@ export default async function (fastify, opts) {
 				return {statusCode: 400, msg: validate.errors}
 			}
 
+			const tmpNo = mergedReidentification.reidentification.taxon_no
+
 			//Need to re-add reid_no after validation because fastify sets removeAdditional to true, which removes properties that aren't in validation schema. But model needs it.
 			mergedReidentification.reidentification.reid_no = parseInt(req.params.id);
+			mergedReidentification.reidentification.taxon_no = tmpNo;
 			fastify.log.info("mergedReidentification after validation(reid_no added")
 			fastify.log.info(mergedReidentification)
 

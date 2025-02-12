@@ -3,28 +3,39 @@ Validation schemas in JSON Schema format. Note that fastify uses ajv (https://aj
 */
 
 const occurrenceProperties = {
-	reid_no: {type: "integer"},
 	collection_no: {type: "integer"},	
-	taxon_no: {type: "integer"},	
+	taxon_name: {type: "string"},
 	genus_reso: {
-		description: "Required if taxon_no is for a genus",
 		type: "string",
 		enum: ['','aff.','cf.','ex gr.','n. gen.','sensu lato','?','"','informal'],
 	},
+	genus_name: {
+		type: "string",
+		maxLength: 255
+	},
 	subgenus_reso: {
-		description: "Required if taxon_no is for a subgenus",
 		type: "string",
 		enum: ['','aff.','cf.','ex gr.','n. subgen.','sensu lato','?','"','informal'],
 	},
+	subgenus_name: {
+		type: "string",
+		maxLength: 255
+	},
 	species_reso: {
-		description: "Required if taxon_no is for a species",
 		type: "string",
 		enum: ['','aff.','cf.','ex gr.','n. sp.','sensu lato','?','"','informal'],
 	},
+	species_name: {
+		type: "string",
+		maxLength: 255
+	},
 	subspecies_reso: {
-		description: "Required if taxon_no is for a subspecies",
 		type: "string",
 		enum: ['','aff.','cf.','ex gr.','n. sp.','sensu lato','?','"','informal'],
+	},
+	subspecies_name: {
+		type: "string",
+		maxLength: 255
 	},
 	abund_value: {
 		type: "string",
@@ -76,7 +87,12 @@ export const editSchema = {
 				properties: occurrenceProperties,
 			},
 			allowDuplicate: {
-				type: "boolean"
+				type: "boolean",
+				default: false
+			},
+			bypassTaxon: {
+				type: "boolean",
+				default: false
 			}
 		},
 		examples: [{
@@ -108,16 +124,32 @@ export const createSchema = {
 				additionalProperties: false,
 				required: [
 					"collection_no",
-					"taxon_no",
 					"reference_no",
                 ],
+				oneOf: [{
+					required: [
+						"genus_name"
+					]
+				}, {
+					required: [
+						"taxon_name"
+					]
+				}],
 				dependentRequired: {
+					subgenus_name: ["genus_name"],
+					species_name: ["genus_name"],
+					subspecies_name: ["species_name", "genus_name"],
 					abund_value: ["abund_unit"]
-				  }
+				}
 				
 			},
 			allowDuplicate: {
-				type: "boolean"
+				type: "boolean",
+				default: false
+			},
+			bypassTaxon: {
+				type: "boolean",
+				default: false
 			}
       	},
 		examples: [{

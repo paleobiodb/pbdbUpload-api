@@ -5,7 +5,7 @@ Validation schemas in JSON Schema format. Note that fastify uses ajv (https://aj
 const currentYear = new Date(Date.now()).getFullYear();
 
 const authorityProperties = {
-	taxon_no: {type: "integer"},
+	//taxon_no: {type: "integer"},
 	orig_no: {type: "integer"},	
 	reference_no: {type: "integer"},	
 	taxon_rank: {
@@ -82,8 +82,8 @@ const authorityProperties = {
 	refauth: {type: "integer"},	
 	author1init: {
 		type: "string",
-		pattern: "^(?:\\p{L}\\.? *){1,2}", //TODO: Pattern needs work. See Validaiton.pm, line 143
-		maxLength: 10
+		//pattern: "^(?:\\p{L}\\.? *){1,2}", //TODO: Pattern needs work. See Validaiton.pm, line 143
+		pattern: "^(?:[a-z]|[A-Z]\\.? *){1,2}", //TODO: Pattern needs work. See Validaiton.pm, line 143		maxLength: 10
 	},	
 	author1last: {
 		type: "string", //TODO: see Validaiton.pm, line 124
@@ -156,7 +156,12 @@ export const editSchema = {
 				properties: authorityProperties,
 			},
 			allowDuplicate: {
-				type: "boolean"
+				type: "boolean",
+				default: false
+			},
+			bypassOccurrences: {
+				type: "boolean",
+				default: false
 			}
 		},
 		examples: [{
@@ -305,7 +310,12 @@ export const createSchema = {
 				}],
 			},
 			allowDuplicate: {
-				type: "boolean"
+				type: "boolean",
+				default: false
+			},
+			bypassOccurrences: {
+				type: "boolean",
+				default: false
 			}
       	},
 		examples: [{
